@@ -1,0 +1,85 @@
+"""
+rag_ingest.py
+─────────────
+Pipeline:  PDF  →  chunks  →  embeddings  →  FAISS vector store (saved to disk)
+
+Dependencies:
+    pip install fastembed langchain-community langchain-text-splitters faiss-cpu pypdf
+
+Usage:
+    python rag_ingest.py path/to/document.pdf              # default output: ./faiss_index/
+    python rag_ingest.py path/to/document.pdf --out ./my_index
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+# ── Configuration ─────────────────────────────────────────────────
+# Embedding model (ONNX, no transformers/torch needed)
+# Other options: "BAAI/bge-base-en-v1.5", "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 200
+DEFAULT_INDEX_DIR = "./faiss_index"
+
+
+def load_and_chunk_pdf(pdf_path: str) -> list:
+    """Load a PDF and split it into overlapping text chunks."""
+    if not os.path.isfile(pdf_path):
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+    print(f"[1/4] Loading PDF: {pdf_path}")
+    loader = PyPDFLoader(pdf_path)
+    docs = loader.load()
+    print(f"       → {len(docs)} page(s) loaded")
+
+    print(f"[2/4] Splitting into chunks (size={CHUNK_SIZE}, overlap={CHUNK_OVERLAP})")
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
+        separators=["\n\n", "\n", " ", ""],
+    )
+    chunks = splitter.split_documents(docs)
+    print(f"       → {len(chunks)} chunk(s) created")
+    return chunks
+
+
+def build_and_save_index(chunks: list, index_dir: str) -> None:
+    """Embed chunks with FastEmbed and persist a FAISS index to disk."""
+    print(f"[3/4] Embedding chunks with {EMBEDDING_MODEL} (ONNX) …")
+    embeddings = FastEmbedEmbeddings(model_name=EMBEDDING_MODEL)
+    vector_store = FAISS.from_documents(chunks, embeddings)
+
+    print(f"[4/4] Saving FAISS index to: {index_dir}")
+    vector_store.save_local(index_dir)
+    print("       ✓ Done – index saved successfully.\n")
+
+
+# ── CLI entry point ───────────────────────────────────────────────
+def main():
+    parser = argparse.ArgumentParser(description="Ingest a PDF into a FAISS vector store.")
+    parser.add_argument("pdf", help="Path to the PDF file to ingest.")
+    parser.add_argument(
+        "--out",
+        default=DEFAULT_INDEX_DIR,
+        help=f"Directory to save the FAISS index (default: {DEFAULT_INDEX_DIR})",
+    )
+    args = parser.parse_args()
+
+    chunks = load_and_chunk_pdf(args.pdf)
+    build_and_save_index(chunks, args.out)
+
+    print("You can now run queries with:")
+    print(f'  python rag_query.py "Your question here" --index {args.out}')
+
+
+if __name__ == "__main__":
+    main()

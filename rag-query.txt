@@ -1,0 +1,159 @@
+"""
+rag_query.py
+────────────
+Pipeline:  User query  →  FAISS retrieval  →  build prompt  →  HuggingFace LLM  →  answer
+
+Dependencies:
+    pip install fastembed langchain-community faiss-cpu huggingface-hub python-dotenv
+
+Setup:
+    1. Run rag_ingest.py first to create the FAISS index.
+    2. Set your HuggingFace token:
+         - Create a .env file with:  HF_API_TOKEN=hf_xxxxx
+         - Or export it:  set HF_API_TOKEN=hf_xxxxx   (Windows)
+
+Usage:
+    python rag_query.py "What is machine learning?"
+    python rag_query.py "Summarise chapter 2" --index ./my_index --top-k 5
+    python rag_query.py "Explain RAG" --model mistralai/Mistral-7B-Instruct-v0.3
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import textwrap
+
+from dotenv import load_dotenv
+from huggingface_hub import InferenceClient
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
+from langchain_community.vectorstores import FAISS
+
+load_dotenv()
+
+# ── Configuration ─────────────────────────────────────────────────
+EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"        # must match the ingest model
+DEFAULT_INDEX_DIR = "./faiss_index"
+DEFAULT_TOP_K = 4
+
+# Open-source text-generation models available on HF Inference API (free tier).
+# Pick any instruction-tuned model you like:
+#   "mistralai/Mistral-7B-Instruct-v0.3"
+#   "HuggingFaceH4/zephyr-7b-beta"
+#   "google/gemma-2-2b-it"
+#   "microsoft/Phi-3-mini-4k-instruct"
+DEFAULT_LLM_MODEL = "HuggingFaceH4/zephyr-7b-beta"
+
+SYSTEM_PROMPT = textwrap.dedent("""\
+    You are a helpful assistant. Answer the user's question using ONLY the
+    context provided below. If the context does not contain enough information,
+    say "I don't have enough information to answer that."
+
+    Context:
+    {context}
+""")
+
+
+# ── Retrieval ─────────────────────────────────────────────────────
+def load_index(index_dir: str):
+    """Load the persisted FAISS index from disk."""
+    if not os.path.isdir(index_dir):
+        print(f"Error: Index directory not found: {index_dir}")
+        print("Run rag_ingest.py first to create the vector store.")
+        sys.exit(1)
+
+    print(f"[1/4] Loading FAISS index from {index_dir} …")
+    embeddings = FastEmbedEmbeddings(model_name=EMBEDDING_MODEL)
+    vector_store = FAISS.load_local(
+        index_dir, embeddings, allow_dangerous_deserialization=True
+    )
+    return vector_store
+
+
+def retrieve_chunks(vector_store, query: str, top_k: int = DEFAULT_TOP_K) -> list:
+    """Run semantic search and return the top-k most relevant chunks."""
+    print(f"[2/4] Retrieving top-{top_k} chunks for query …")
+    retriever = vector_store.as_retriever(
+        search_type="similarity", search_kwargs={"k": top_k}
+    )
+    docs = retriever.invoke(query)
+    print(f"       → {len(docs)} chunk(s) retrieved")
+    return docs
+
+
+# ── Prompt building ───────────────────────────────────────────────
+def build_prompt(query: str, chunks: list) -> list[dict]:
+    """Combine retrieved context + user query into a chat-style prompt."""
+    context_text = "\n\n---\n\n".join(
+        f"[Chunk {i+1} | page {doc.metadata.get('page', '?')}]\n{doc.page_content}"
+        for i, doc in enumerate(chunks)
+    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT.format(context=context_text)},
+        {"role": "user", "content": query},
+    ]
+    return messages
+
+
+# ── LLM call ─────────────────────────────────────────────────────
+def call_llm(messages: list[dict], model: str) -> str:
+    """Send the prompt to a HuggingFace open-source text-generation model."""
+    token = os.getenv("HF_API_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+    if not token:
+        print("Warning: No HF_API_TOKEN found. The Inference API may rate-limit you.")
+
+    print(f"[3/4] Sending prompt to {model} …")
+    client = InferenceClient(model=model, token=token)
+    response = client.chat_completion(
+        messages=messages,
+        max_tokens=1024,
+        temperature=0.3,
+    )
+    answer = response.choices[0].message.content
+    return answer
+
+
+# ── CLI entry point ───────────────────────────────────────────────
+def main():
+    parser = argparse.ArgumentParser(
+        description="Query your PDF knowledge base using RAG + open-source LLM."
+    )
+    parser.add_argument("query", help="The question to ask.")
+    parser.add_argument(
+        "--index",
+        default=DEFAULT_INDEX_DIR,
+        help=f"Path to the FAISS index directory (default: {DEFAULT_INDEX_DIR})",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=DEFAULT_TOP_K,
+        help=f"Number of chunks to retrieve (default: {DEFAULT_TOP_K})",
+    )
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_LLM_MODEL,
+        help=f"HuggingFace model for text generation (default: {DEFAULT_LLM_MODEL})",
+    )
+    args = parser.parse_args()
+
+    # 1. Load index
+    vector_store = load_index(args.index)
+
+    # 2. Retrieve relevant chunks
+    chunks = retrieve_chunks(vector_store, args.query, args.top_k)
+
+    # 3. Build prompt
+    messages = build_prompt(args.query, chunks)
+
+    # 4. Call LLM
+    answer = call_llm(messages, args.model)
+
+    # 5. Display
+    print(f"\n[4/4] Answer:\n{'─' * 60}")
+    print(answer)
+    print('─' * 60)
+
+
+if __name__ == "__main__":
+    main()

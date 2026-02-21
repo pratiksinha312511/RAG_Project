@@ -1,0 +1,5 @@
+embedding.py file updated, working now !!
+Donot install sentence transformers for now, taking too much space, instead use from fastembed import TextEmbedding
+directory update in terminal(ye mere liye - cd /workspaces/RAG_Project/Document_embedding
+/workspaces/RAG_Project/venv/bin/python embedding.py)
+
