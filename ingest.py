@@ -1,10 +1,11 @@
 import os
-<<<<<<< HEAD
-from langchain_community.document_loaders import PyMuPDFLoader, PyPDFLoader, DirectoryLoader
-=======
-from langchain_community.document_loaders import DirectoryLoader
-from langchain_community.document_loaders import PyMuPDFLoader
->>>>>>> ff0fca72db1cc08e4d457370de0a0540508b2ad2
+# Loaders
+from langchain_community.document_loaders import (
+    PyMuPDFLoader, 
+    Docx2txtLoader, 
+    UnstructuredExcelLoader,
+    JSONLoader
+)
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -21,29 +22,41 @@ DB_FAISS_PATH = os.path.join(BASE_DIR, "vectorstore", "db_faiss")
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
 
-<<<<<<< HEAD
 # Create directories if they don't exist
 os.makedirs(DATA_PATH, exist_ok=True)
 os.makedirs(PROCESSED_PATH, exist_ok=True)
 os.makedirs("vectorstore", exist_ok=True)
 
-def update_vector_db():
-    # 1. Get list of files
-    pdf_files = [f for f in os.listdir(DATA_PATH) if f.lower().endswith(".pdf")]
+
+def get_loader(file_path: str):
+    """Returns the appropriate loader based on file extension."""
+    ext = os.path.splitext(file_path)[1].lower()
     
-    if not pdf_files:
-        print("No new PDF files found.")
-=======
-def create_vector_db():
-    # 1. Load PDFs from the directory
-    print(f"Loading PDFs from {DATA_PATH}...")
-    loader = DirectoryLoader(DATA_PATH, glob="*.pdf", loader_cls=PyMuPDFLoader)
-    try:
-        documents = loader.load()
-        print(f"Loaded {len(documents)} documents.")
-    except Exception as e:
-        print(f"Error loading documents: {e}")
->>>>>>> ff0fca72db1cc08e4d457370de0a0540508b2ad2
+    if ext == ".pdf":
+        return PyMuPDFLoader(file_path)
+    elif ext == ".docx" or ext == ".doc":
+        return Docx2txtLoader(file_path)
+    elif ext == ".xlsx" or ext == ".xls":
+        # Requires 'unstructured' and 'openpyxl'
+        return UnstructuredExcelLoader(file_path, mode="elements")
+    elif ext == ".json":
+        # This basic schema loads all text values from the JSON
+        # Requires 'jq' package installed in the system/env
+        return JSONLoader(
+            file_path=file_path,
+            jq_schema=".[]",
+            text_content=False
+        )
+    else:
+        return None
+    
+
+def update_vector_db():
+    # 1. Get list of all files in data folder
+    all_files = [f for f in os.listdir(DATA_PATH) if os.path.isfile(os.path.join(DATA_PATH, f))]
+    
+    if not all_files:
+        print("No new files found in 'data/' folder.")
         return
 
     embeddings = FastEmbedEmbeddings(model_name=EMBEDDING_MODEL)
@@ -51,54 +64,58 @@ def create_vector_db():
 
     # 2. Load existing DB if it exists
     if os.path.exists(DB_FAISS_PATH):
-        vector_db = FAISS.load_local(DB_FAISS_PATH, embeddings, allow_dangerous_deserialization=True)
+        print("Loading existing FAISS index...")
+        vector_db = FAISS.load_local(
+            DB_FAISS_PATH, 
+            embeddings, 
+            allow_dangerous_deserialization=True
+        )
 
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
 
-    for file_name in pdf_files:
+    for file_name in all_files:
         file_path = os.path.join(DATA_PATH, file_name)
-        print(f"\n--- Processing: {file_name} ---")
+        loader = get_loader(file_path)
+
+        if loader is None:
+            print(f"Skipping unsupported file type: {file_name}")
+            continue
+
+        print(f"\n--- Processing {os.path.splitext(file_name)[1].upper()}: {file_name} ---")
 
         try:
-            # 3. Load PDF and immediately extract data
-            # Using a temporary variable to ensure the loader object doesn't persist
-            loader = PyMuPDFLoader(file_path)
+            # 3. Extract and Split
             documents = loader.load()
-            
-            # 4. Split and Add to DB
             chunks = text_splitter.split_documents(documents)
             
+            # 4. Update Vector Store
             if vector_db is None:
                 vector_db = FAISS.from_documents(chunks, embeddings)
             else:
                 vector_db.add_documents(chunks)
             
-            # Save DB after every file to be safe
+            # Save after every successful file
             vector_db.save_local(DB_FAISS_PATH)
-            print(f"Added to Vector DB: {file_name}")
+            print(f"Indexed {len(chunks)} chunks from {file_name}")
 
-            # 5. CLEAR FILE HANDLES
-            # We explicitly delete the loader and documents to release the file lock
+            # 5. Cleanup and Move
+            # Explicitly delete objects to release file locks (important for Windows)
             del loader
             del documents
             
-            # 6. ATTEMPT TO MOVE
-            # On Windows, we need to wait a tiny bit for the OS to acknowledge the file is free
-            time.sleep(1.5) 
+            time.sleep(1.5) # Buffer for OS to release file handle
             
             dest_path = os.path.join(PROCESSED_PATH, file_name)
             if os.path.exists(dest_path):
                 dest_path = os.path.join(PROCESSED_PATH, f"{int(time.time())}_{file_name}")
 
             shutil.move(file_path, dest_path)
-            print(f"Successfully moved to 'processed' folder.")
+            print(f"File moved to 'processed' folder.")
 
-        except PermissionError:
-            print(f"ERROR: Could not move {file_name}. Is the PDF open in another program (Chrome/Adobe)?")
         except Exception as e:
-            print(f"CRITICAL ERROR: {str(e)}")
+            print(f"Error processing {file_name}: {str(e)}")
 
-    print("\nAll tasks finished.")
+    print("\nAll new documents have been integrated into the Vector DB.")
 
 if __name__ == "__main__":
     update_vector_db()
