@@ -1,0 +1,46 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+
+:root {
+  --brand-900:       #0f1117;
+  --brand-800:       #16192a;
+  --brand-700:       #1e2235;
+  --brand-accent:    #5b8af5;
+  --brand-accent-soft: rgba(91,138,245,0.15);
+  --text-primary:    #e8eaf6;
+  --border:          rgba(91,138,245,0.2);
+}
+
+body, #root {
+  background: var(--brand-900) !important;
+  font-family: 'DM Sans', sans-serif !important;
+}
+
+[data-testid="user-message"] {
+  background: var(--brand-accent-soft) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 18px 18px 4px 18px !important;
+  color: var(--text-primary) !important;
+}
+
+[data-testid="ai-message"], [class*="AiMessage"] {
+  background: var(--brand-700) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 18px 18px 18px 4px !important;
+  color: var(--text-primary) !important;
+}
+
+textarea, [class*="MuiInputBase-input"] {
+  background: var(--brand-800) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 12px !important;
+  font-family: 'DM Sans', sans-serif !important;
+}
+
+button[type="submit"] {
+  background: var(--brand-accent) !important;
+  border-radius: 10px !important;
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-thumb { background: var(--brand-accent); border-radius: 3px; }

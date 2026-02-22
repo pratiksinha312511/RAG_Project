@@ -1,0 +1,21 @@
+[project]
+enable_telemetry = false
+
+[features]
+multi_modal       = false
+speech_to_text    = false
+prompt_playground = false
+
+[UI]
+name          = "PDF Chatbot"
+description   = "Ask questions about your documents"
+favicon       = "https://em-content.zobj.net/source/apple/354/page-facing-up_1f4c4.png"
+default_theme = "dark"
+
+[UI.theme]
+[UI.theme.dark]
+background = "#0f1117"
+paper      = "#1a1d27"
+
+[meta]
+generated_by = "chainlit"
