@@ -1,5 +1,6 @@
 import os
-from langchain_community.document_loaders import PyPDFLoader, DirectoryLoader
+from langchain_community.document_loaders import DirectoryLoader
+from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -13,7 +14,7 @@ EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 def create_vector_db():
     # 1. Load PDFs from the directory
     print(f"Loading PDFs from {DATA_PATH}...")
-    loader = DirectoryLoader(DATA_PATH, glob="*.pdf", loader_cls=PyPDFLoader)
+    loader = DirectoryLoader(DATA_PATH, glob="*.pdf", loader_cls=PyMuPDFLoader)
     try:
         documents = loader.load()
         print(f"Loaded {len(documents)} documents.")
