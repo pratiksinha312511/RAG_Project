@@ -1,5 +1,10 @@
 import os
+<<<<<<< HEAD
 from langchain_community.document_loaders import PyMuPDFLoader, PyPDFLoader, DirectoryLoader
+=======
+from langchain_community.document_loaders import DirectoryLoader
+from langchain_community.document_loaders import PyMuPDFLoader
+>>>>>>> ff0fca72db1cc08e4d457370de0a0540508b2ad2
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -16,6 +21,7 @@ DB_FAISS_PATH = os.path.join(BASE_DIR, "vectorstore", "db_faiss")
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
 
+<<<<<<< HEAD
 # Create directories if they don't exist
 os.makedirs(DATA_PATH, exist_ok=True)
 os.makedirs(PROCESSED_PATH, exist_ok=True)
@@ -27,6 +33,17 @@ def update_vector_db():
     
     if not pdf_files:
         print("No new PDF files found.")
+=======
+def create_vector_db():
+    # 1. Load PDFs from the directory
+    print(f"Loading PDFs from {DATA_PATH}...")
+    loader = DirectoryLoader(DATA_PATH, glob="*.pdf", loader_cls=PyMuPDFLoader)
+    try:
+        documents = loader.load()
+        print(f"Loaded {len(documents)} documents.")
+    except Exception as e:
+        print(f"Error loading documents: {e}")
+>>>>>>> ff0fca72db1cc08e4d457370de0a0540508b2ad2
         return
 
     embeddings = FastEmbedEmbeddings(model_name=EMBEDDING_MODEL)
