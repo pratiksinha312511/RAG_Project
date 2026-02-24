@@ -11,13 +11,15 @@ env var or hardcoded credentials). The user object is then passed through
 every DataLayer call so threads are scoped per user.
 """
 
-import uuid, json, sqlite3, os
+import uuid, json, sqlite3, os,traceback
 from typing import Dict, List, Optional, Any
 
 import chainlit as cl
 import chainlit.data as cl_data
 from chainlit.user import User
 from langchain_core.messages import HumanMessage, AIMessage
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from wasabi import msg
 from app import app
 
 # ── Credentials — change these or load from .env ───────────────────────────
@@ -270,6 +272,22 @@ async def on_chat_start():
     cl.user_session.set("user_id",   user_id)
     cl.user_session.set("msg_count", 0)
 
+# ✅ NEW: Create async memory
+    SQLITE_PATH = os.path.join(
+        os.path.dirname(__file__),
+        "chat_history.db"
+    )
+    saver_cm = AsyncSqliteSaver.from_conn_string(SQLITE_PATH)
+
+    memory = await saver_cm.__aenter__()
+
+    cl.user_session.set("memory_cm", saver_cm)
+    cl.user_session.set("memory", memory)
+    cl.user_session.set(
+        "thread_id",
+        cl.context.session.id
+    )
+
     # Register thread in DB (titled on first message)
     db_upsert_thread(thread_id, "New Chat", user_id)
 
@@ -321,48 +339,62 @@ async def on_message(message: cl.Message):
     user_id   = cl.user_session.get("user_id",   "anonymous")
     cl.user_session.set("thread_id", thread_id)
 
-    config = {"configurable": {"thread_id": thread_id}}
-
-    # Persist user message
+    memory    = cl.user_session.get("memory")
+    # Save user msg
     db_save_message(thread_id, "user", message.content)
-
-    # Title thread from first message
     msg_count = cl.user_session.get("msg_count", 0)
     if msg_count == 0:
-        title = message.content.strip().replace("\n", " ")
-        title = title[:60] + ("…" if len(title) > 60 else "")
+        title = message.content[:60]
         db_upsert_thread(thread_id, title, user_id)
     cl.user_session.set("msg_count", msg_count + 1)
-
-    # Stream AI response
     response_msg = cl.Message(content="", author="Assistant")
     await response_msg.send()
 
     try:
-        result = app.invoke(
-            {"messages": [HumanMessage(content=message.content)]},
-            config,
-        )
-        last          = result["messages"][-1]
-        response_text = last.content if isinstance(last, AIMessage) else str(last)
+        async for chunk in app.astream(
+            {
+                "messages":[
+                    HumanMessage(content=message.content)
+                ]
+            },
+            config={
+                "configurable": {
+                    "thread_id": thread_id
+                },
+                "checkpointer": memory
+            }
+        ):
+            print("CHUNK:", chunk)   # DEBUG
 
-        for chunk in response_text:
-            await response_msg.stream_token(chunk)
-
-        ctx = result.get("context", "")
-        if ctx:
-            response_msg.elements = [
-                cl.Text(name="📄 Source Chunks", content=ctx, display="side")
-            ]
-
+            if "assistant" in chunk and "messages" in chunk["assistant"]:
+                for m in chunk["assistant"]["messages"]:
+                    if isinstance(m, AIMessage):
+                        if isinstance(m.content, str):
+                            await response_msg.stream_token(m.content)
+                        elif isinstance(m.content, list):
+                            for part in m.content:
+                                if part.get("type") == "text":
+                                    await response_msg.stream_token(part.get("text", ""))
+        await response_msg.update()
+        
     except Exception as e:
-        await response_msg.stream_token(f"\n\n⚠️ Error: {e}")
-
+        traceback.print_exc()
+        await response_msg.stream_token(
+            f"\n\n⚠️ Error: {str(e)}"
+        )
     await response_msg.update()
 
-    # Persist assistant reply
-    db_save_message(thread_id, "assistant", response_msg.content)
+    db_save_message(
+        thread_id,
+        "assistant",
+        response_msg.content
+    )
 
+@cl.on_chat_end
+async def on_chat_end():
+    saver_cm = cl.user_session.get("memory_cm")
+    if saver_cm:
+        await saver_cm.__aexit__(None, None, None)
 
 if __name__ == "__main__":
     print("Run this app with:  chainlit run chainlit_app.py -w")
