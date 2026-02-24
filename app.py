@@ -61,7 +61,14 @@ for module_name, retriever in retrievers.items():
         def search(query: str) -> str:
             print(f"\n[TOOL CALLED]: {module_name}\n")
             docs = retriever.invoke(query)
-            return "\n\n".join(d.page_content for d in docs)
+            return f"""
+            Use the following information to answer the question.
+
+            {chr(10).join(d.page_content for d in docs)}
+
+            If this fully answers the question, do NOT call tool again.
+            If you don't know the answer, say you don't know. Do NOT call tool again.
+            """
         return search
 
     func = make_func(retriever)
@@ -79,11 +86,21 @@ for module_name, retriever in retrievers.items():
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-3-flash-preview",
-    temperature=0,
-    streaming=True
+    streaming=True,
+    disable_streaming=False,
+    additional_kwargs={
+        "tool_config": {
+            "function_calling_config": {
+                "mode": "NONE"
+            }
+        }
+    }
 )
-llm_with_tools = llm.bind_tools(tools)
 
+llm_with_tools = llm.bind_tools(
+    tools,
+    tool_choice="auto"
+)
 # ============================================================
 # SQLITE MEMORY
 # ============================================================
@@ -124,11 +141,17 @@ class AgentState(TypedDict):
 # ============================================================
 
 def assistant_node(state: AgentState):
+
     messages = state["messages"]
-    response = llm_with_tools.invoke(messages)
-    return {
-        "messages": [response]
-    }
+
+    # If last message is ToolMessage, force final answer without tool
+    if messages and messages[-1].type == "tool":
+        llm_no_tools = llm  # plain Gemini without tools
+        response = llm_no_tools.invoke(messages)
+    else:
+        response = llm_with_tools.invoke(messages)
+
+    return {"messages": [response]}
 
 tool_node = ToolNode(tools)
 
@@ -140,15 +163,20 @@ tool_node = ToolNode(tools)
 workflow = StateGraph(AgentState)
 
 workflow.add_node("assistant", assistant_node)
-
-workflow.add_node("tools", tool_node)
+workflow.add_node("tools", ToolNode(tools))
 
 workflow.set_entry_point("assistant")
 
 workflow.add_conditional_edges(
     "assistant",
     tools_condition,
+    {
+        "tools": "tools",
+        "__end__": END,
+    },
 )
 
 workflow.add_edge("tools", "assistant")
+
+
 app = workflow.compile()
