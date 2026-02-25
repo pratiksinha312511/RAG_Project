@@ -11,6 +11,12 @@ DATABASE MAP:
 """
 
 import uuid, json, sqlite3, os, traceback
+try:
+    from dotenv import load_dotenv
+    # Load .env early so LangSmith / LangChain tracing env vars are available
+    load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
+except Exception:
+    pass
 from typing import Dict, List, Optional, Any
 
 import chainlit as cl

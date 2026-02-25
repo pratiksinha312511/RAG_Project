@@ -1,4 +1,5 @@
 import os
+import inspect
 import sqlite3
 
 from typing import Annotated, TypedDict, Sequence
@@ -16,6 +17,31 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from dotenv import load_dotenv
 load_dotenv()
+
+# ── LangSmith tracing ────────────────────────────────────────────────────────
+# Reads LANGCHAIN_TRACING_V2, LANGCHAIN_API_KEY, LANGCHAIN_PROJECT from .env
+# No code changes needed beyond this import — all LangGraph runs are traced.
+# Dashboard: https://smith.langchain.com
+try:
+    from langsmith import traceable  # noqa: F401  triggers SDK initialisation
+    import os
+    if os.getenv("LANGCHAIN_TRACING_V2", "").lower() == "true":
+        print(f"[LangSmith] Tracing enabled → project: {os.getenv('LANGCHAIN_PROJECT', 'default')}")
+    else:
+        print("[LangSmith] LANGCHAIN_TRACING_V2 not set — tracing disabled")
+except ImportError:
+    print("[LangSmith] SDK not installed. Run: pip install langsmith")
+else:
+    # Try to create a LangSmith tracer and callback manager for LangChain
+    try:
+        from langchain.tracers import LangSmithTracer
+        from langchain.callbacks.manager import CallbackManager
+        tracer = LangSmithTracer(project_name=os.getenv("LANGCHAIN_PROJECT", "default"))
+        cb_manager = CallbackManager(tracers=[tracer])
+        print("[LangSmith] LangSmithTracer initialized and callback manager created")
+    except Exception:
+        tracer = None
+        cb_manager = None
 
 # ============================================================
 # CONFIG
@@ -56,10 +82,37 @@ tools = []
 
 for module_name, retriever in retrievers.items():
 
-    def make_func(retriever):
+    def make_func(retriever, module_name=module_name):
         def search(query: str) -> str:
             print(f"\n[TOOL CALLED]: {module_name}\n")
-            docs = retriever.invoke(query)
+            try:
+                invoke_fn = getattr(retriever, "invoke", None)
+                if invoke_fn is not None:
+                    sig = None
+                    try:
+                        sig = inspect.signature(invoke_fn)
+                    except Exception:
+                        sig = None
+                    if sig and "callback_manager" in sig.parameters and cb_manager is not None:
+                        docs = invoke_fn(query, callback_manager=cb_manager)
+                    else:
+                        docs = invoke_fn(query)
+                elif hasattr(retriever, "get_relevant_documents"):
+                    get_docs = getattr(retriever, "get_relevant_documents")
+                    sig = None
+                    try:
+                        sig = inspect.signature(get_docs)
+                    except Exception:
+                        sig = None
+                    if sig and "run_manager" in sig.parameters and cb_manager is not None:
+                        docs = get_docs(query, run_manager=cb_manager)
+                    else:
+                        docs = get_docs(query)
+                else:
+                    raise AttributeError("Retriever has no known invoke/get_relevant_documents method")
+            except Exception as e:
+                print(f"[TOOL ERROR]: {e}")
+                docs = []
             return "\n\n".join(d.page_content for d in docs)
         return search
 
@@ -90,7 +143,16 @@ _hf_endpoint = HuggingFaceEndpoint(
     huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN"),
 )
 
-llm = ChatHuggingFace(llm=_hf_endpoint)
+# Attach callback manager to LLM if available so traces include LLM activity
+llm_kwargs = {}
+try:
+    if cb_manager:
+        llm_kwargs["callback_manager"] = cb_manager
+    llm_kwargs["verbose"] = True
+except NameError:
+    pass
+
+llm = ChatHuggingFace(llm=_hf_endpoint, **llm_kwargs)
 # ── END BLOCK ────────────────────────────────────────
 
 llm_with_tools = llm.bind_tools(tools)
