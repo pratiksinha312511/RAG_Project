@@ -8,8 +8,7 @@ from langgraph.graph.message import add_messages
 
 from langchain_core.tools import StructuredTool, tool
 
-from langchain_google_genai import ChatGoogleGenerativeAI
-
+from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 
@@ -61,14 +60,7 @@ for module_name, retriever in retrievers.items():
         def search(query: str) -> str:
             print(f"\n[TOOL CALLED]: {module_name}\n")
             docs = retriever.invoke(query)
-            return f"""
-            Use the following information to answer the question.
-
-            {chr(10).join(d.page_content for d in docs)}
-
-            If this fully answers the question, do NOT call tool again.
-            If you don't know the answer, say you don't know. Do NOT call tool again.
-            """
+            return "\n\n".join(d.page_content for d in docs)
         return search
 
     func = make_func(retriever)
@@ -81,26 +73,28 @@ for module_name, retriever in retrievers.items():
     tools.append(tool)
 
 # ============================================================
-# LLM
+# LLM BLOCK ──────────────────────────────────────
+# Model options (pick one, set the repo_id below):
+#   - "mistralai/Mistral-7B-Instruct-v0.3"   (good general-purpose)
+#   - "meta-llama/Meta-Llama-3-8B-Instruct"  (strong reasoning, needs HF access)
+#   - "HuggingFaceH4/zephyr-7b-beta"         (instruction-tuned, no gating)
+#   - "Qwen/Qwen2.5-7B-Instruct"             (strong multilingual)
 # ============================================================
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-3-flash-preview",
+_hf_endpoint = HuggingFaceEndpoint(
+    repo_id="Qwen/Qwen2.5-7B-Instruct",   # ← swap repo_id here
+    task="text-generation",
+    max_new_tokens=1024,
+    temperature=0.1,
     streaming=True,
-    disable_streaming=False,
-    additional_kwargs={
-        "tool_config": {
-            "function_calling_config": {
-                "mode": "NONE"
-            }
-        }
-    }
+    huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN"),
 )
 
-llm_with_tools = llm.bind_tools(
-    tools,
-    tool_choice="auto"
-)
+llm = ChatHuggingFace(llm=_hf_endpoint)
+# ── END BLOCK ────────────────────────────────────────
+
+llm_with_tools = llm.bind_tools(tools)
+
 # ============================================================
 # SQLITE MEMORY
 # ============================================================
@@ -141,17 +135,11 @@ class AgentState(TypedDict):
 # ============================================================
 
 def assistant_node(state: AgentState):
-
     messages = state["messages"]
-
-    # If last message is ToolMessage, force final answer without tool
-    if messages and messages[-1].type == "tool":
-        llm_no_tools = llm  # plain Gemini without tools
-        response = llm_no_tools.invoke(messages)
-    else:
-        response = llm_with_tools.invoke(messages)
-
-    return {"messages": [response]}
+    response = llm_with_tools.invoke(messages)
+    return {
+        "messages": [response]
+    }
 
 tool_node = ToolNode(tools)
 
@@ -163,20 +151,15 @@ tool_node = ToolNode(tools)
 workflow = StateGraph(AgentState)
 
 workflow.add_node("assistant", assistant_node)
-workflow.add_node("tools", ToolNode(tools))
+
+workflow.add_node("tools", tool_node)
 
 workflow.set_entry_point("assistant")
 
 workflow.add_conditional_edges(
     "assistant",
     tools_condition,
-    {
-        "tools": "tools",
-        "__end__": END,
-    },
 )
 
 workflow.add_edge("tools", "assistant")
-
-
 app = workflow.compile()

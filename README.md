@@ -67,3 +67,21 @@ project/
 5. Clicking a sidebar thread calls `on_chat_resume(thread)` with `thread["id"]`
 6. We use `thread["id"]` (not the session id) to load the correct messages
 7. LangGraph uses the same `thread_id` as config key for checkpoint lookup
+
+
+## DB Structure
+your_project/
+├── chainlit_threads.db   ← Chainlit UI persistence (threads + messages shown in sidebar)
+│                           Tables: cl_threads, cl_messages
+│                           Created by: chainlit_app.py on startup
+│
+├── chat_history.db       ← LangGraph checkpointer (LLM conversation memory/state)
+│                           Tables: checkpoints (internal langgraph schema)
+│                           Created by: AsyncSqliteSaver in on_chat_start()
+│
+└── vectorstore/
+    └── <module>/
+        ├── index.faiss   ← FAISS vector index (your PDF embeddings)
+        └── index.pkl     ← FAISS metadata pickle
+                            Created by: ingest.py
+                            Never touched by chainlit_app.py

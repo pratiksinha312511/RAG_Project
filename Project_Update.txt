@@ -3,3 +3,10 @@ Donot install sentence transformers for now, taking too much space, instead use 
 directory update in terminal(ye mere liye - cd /workspaces/RAG_Project/Document_embedding
 /workspaces/RAG_Project/venv/bin/python embedding.py)
 
+PyMuPDFLoader is generally better for most use cases because it is faster, more robust, and handles a wider range of PDF files—including those with complex layouts or problematic metadata. PyPDFLoader can fail on some PDFs (e.g., with 'bbox' errors), while PyMuPDFLoader is more reliable and less prone to such issues.
+
+Huggingface update
+UI Update on chat on resume feature and better user experience
+
+
+
