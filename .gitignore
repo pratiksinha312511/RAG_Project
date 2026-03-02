@@ -1,0 +1,10 @@
+### File 4 — `.gitignore` (so you don't accidentally push secrets)
+```
+.env
+*.db
+vectorstore/
+processed/
+data/
+__pycache__/
+*.pyc
+.venv/

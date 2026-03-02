@@ -1,0 +1,39 @@
+### File 3 — `.dockerignore`
+```
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets — NEVER bake these into the image
+.env
+*.env
+
+# SQLite databases — these live on the host via volumes
+*.db
+
+# Git
+.git/
+.gitignore
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+```
+
+---

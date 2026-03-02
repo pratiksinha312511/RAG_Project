@@ -1,0 +1,58 @@
+version: "3.9"
+
+services:
+  chatbot:
+    build: .
+    container_name: pdf-rag-chatbot
+    restart: unless-stopped
+    ports:
+      - "8000:8000"          # http://localhost:8000
+
+    # ── Environment variables ─────────────────────────────────────────────
+    # All secrets come from your .env file — never hardcoded in this file
+    env_file:
+      - .env
+
+    # ── Persistent volumes ────────────────────────────────────────────────
+    # These map host folders → container paths so your data survives
+    # container restarts, rebuilds, and updates.
+    volumes:
+      # FAISS vector index (built by ingest.py)
+      - ./vectorstore:/app/vectorstore
+
+      # Raw documents to ingest (drop PDFs here)
+      - ./data:/app/data
+
+      # Documents after ingestion
+      - ./processed:/app/processed
+
+      # SQLite databases (threads, LangGraph memory, semantic memory)
+      - ./chainlit_threads.db:/app/chainlit_threads.db
+      - ./chat_history.db:/app/chat_history.db
+      - ./memory_store.db:/app/memory_store.db
+
+      # Chainlit config and custom CSS
+      - ./config.toml:/app/config.toml
+      - ./custom.css:/app/custom.css
+
+    # ── Resource limits (optional, tune to your server) ───────────────────
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
+  # ── Ingestion service (run on demand, not always running) ─────────────
+  ingest:
+    build: .
+    container_name: pdf-rag-ingest
+    env_file:
+      - .env
+    volumes:
+      - ./vectorstore:/app/vectorstore
+      - ./data:/app/data
+      - ./processed:/app/processed
+    # Override CMD — run ingest.py then exit
+    command: ["python", "ingest.py"]
+    # Only start this when you explicitly run: docker compose run ingest
+    profiles:
+      - tools
