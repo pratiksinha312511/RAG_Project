@@ -1,42 +1,230 @@
-# PDF Chatbot — LangGraph RAG with Chainlit + LangSmith Tracing
+# 🤖 PDF Chatbot — LangGraph RAG with Chainlit + LangSmith
 
-A production-ready RAG (Retrieval-Augmented Generation) chatbot using **LangGraph**, **Chainlit**, **FAISS vectorstores**, and **LangSmith tracing**. Features secure authentication, multi-threaded conversations with sidebar history, token-level streaming, and full observability into retriever & LLM activity.
+<div align="center">
+
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![LangGraph](https://img.shields.io/badge/LangGraph-RAG_Pipeline-FF6B35?style=for-the-badge)
+![Chainlit](https://img.shields.io/badge/Chainlit-Chat_UI-2D9CDB?style=for-the-badge)
+![FAISS](https://img.shields.io/badge/FAISS-Vector_Search-00C7B7?style=for-the-badge)
+![LangSmith](https://img.shields.io/badge/LangSmith-Observability-7C3AED?style=for-the-badge)
+![Docker](https://img.shields.io/badge/Docker-Containerised-2496ED?style=for-the-badge&logo=docker&logoColor=white)
+
+**A production-ready Retrieval-Augmented Generation (RAG) chatbot that ingests PDFs, DOCX, XLSX, and JSON files into FAISS vectorstores and serves answers via a Qwen 7B LLM — with token-level streaming, secure auth, multi-turn memory, sidebar thread history, and full LangSmith observability.**
+
+</div>
 
 ---
 
-## Quick Start
+## 📖 Table of Contents
 
-### 1. Environment Setup
+- [What It Does](#-what-it-does)
+- [System Architecture](#-system-architecture)
+- [How It Works — Step by Step](#-how-it-works--step-by-step)
+- [Project Structure](#-project-structure)
+- [Quick Start](#-quick-start)
+- [Document Ingestion](#-document-ingestion)
+- [Multi-Module Setup](#-multi-module-setup)
+- [LangSmith Tracing & Observability](#-langsmith-tracing--observability)
+- [Token-Level Streaming](#-token-level-streaming)
+- [Database Architecture](#-database-architecture)
+- [Tools & Retriever Integration](#-tools--retriever-integration)
+- [Performance & Latency](#-performance--latency)
+- [Docker Deployment](#-docker-deployment)
+- [Login Credentials](#-login-credentials)
+- [Troubleshooting](#-troubleshooting)
+- [API References](#-api-references)
 
-Clone the repo and create a virtual environment:
+---
 
-```bash
-python -m venv .venv
-.venv\Scripts\Activate.ps1  # Windows
-# or: source .venv/bin/activate  # Mac/Linux
+## 🎯 What It Does
+
+Given one or more document files (PDF, DOCX, XLSX, JSON), this system:
+
+1. 📥 **Ingests** documents into FAISS vectorstores — chunked, embedded, and indexed locally
+2. 🧠 **Routes** each user query through a LangGraph agent that decides: answer directly or call a retriever tool
+3. 🔍 **Retrieves** the top-k most semantically similar document chunks via FAISS
+4. 💬 **Answers** using Qwen 7B with full multi-turn conversation memory per thread
+5. 📡 **Streams** responses token-by-token into the Chainlit UI in real time
+6. 📊 **Traces** every LLM call, tool invocation, and document fetch in LangSmith
+7. 💾 **Persists** all conversations — resume any thread from the sidebar after closing the browser
+
+---
+
+## 🏗️ System Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        CHAINLIT UI (chainlit_app.py)                    │
+│                                                                         │
+│   Sidebar                         Chat Panel                            │
+│  ┌─────────────────────┐         ┌──────────────────────────────────┐   │
+│  │ 🧵 Thread History   │         │  💬 User message input           │   │
+│  │  ─────────────────  │         │  📡 Token-by-token streaming     │   │
+│  │  > Thread 1 (today) │         │  🔴 Live response rendering      │   │
+│  │    Thread 2         │         │                                  │   │
+│  │    Thread 3 ...     │         │  Auth  → on_chat_start()         │   │
+│  └─────────────────────┘         │  Msg   → on_message()            │   │
+│                                  └──────────────────────────────────┘   │
+└──────────────────────────────────────┬──────────────────────────────────┘
+                                       │
+                      app.astream_events(..., version="v2")
+                                       │
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    LANGGRAPH RAG AGENT (app.py)                         │
+│                                                                         │
+│   START                                                                 │
+│     │                                                                   │
+│     ▼                                                                   │
+│  ┌────────────────────────────────────────────────┐                     │
+│  │              LLM NODE (Qwen 7B)                │                     │
+│  │  "Answer directly OR call a retriever tool"    │                     │
+│  └────────────────────┬───────────────────────────┘                     │
+│                       │                                                 │
+│          ┌────────────┴────────────┐                                    │
+│          │                         │                                    │
+│   Direct Answer              Tool Call                                  │
+│          │                         │                                    │
+│          │              ┌──────────▼──────────┐                         │
+│          │              │    TOOL NODE         │                         │
+│          │              │  <module>_search()   │                         │
+│          │              │  → FAISS retriever   │                         │
+│          │              │  → top-k chunks      │                         │
+│          │              └──────────┬───────────┘                         │
+│          │                         │                                    │
+│          └────────────┬────────────┘                                    │
+│                       │                                                 │
+│                       ▼                                                 │
+│                 Stream response                                          │
+│                  token-by-token                                          │
+│                       │                                                 │
+│                      END                                                │
+└─────────────────────────────────────────────────────────────────────────┘
+                                       │
+                                       ▼ (traces everything)
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         LANGSMITH (Observability)                       │
+│   LLM calls  ·  Tool invocations  ·  Documents retrieved  ·  Latency   │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2. Install Dependencies
+---
+
+## 🔬 How It Works — Step by Step
+
+### Step 1 — User Logs In
+```
+Chainlit shows login form
+  → auth_callback() validates credentials against VALID_USERS dict
+  → Returns User(id="username")
+  → User's thread history loaded from chainlit_threads.db
+  → Sidebar populated with past conversations
+```
+
+### Step 2 — Sidebar Loads Thread History
+```
+SQLiteDataLayer.list_threads(user_id)
+  → Queries chainlit_threads.db
+  → Returns all threads sorted by most recent activity
+  → Sidebar updates live (no page reload needed)
+```
+
+### Step 3 — User Sends a Message
+```
+on_message() triggered
+  → Message saved to chainlit_threads.db  (UI persistence)
+  → Message saved to chat_history.db      (LangGraph memory)
+  → Thread auto-titled from first 60 chars of first message
+  → Sidebar updated via emitter.emit("update_thread", ...)
+```
+
+### Step 4 — LangGraph Agent Decides
+```
+LLM (Qwen 7B) receives: system prompt + full conversation history
+  │
+  ├─► Direct answer → no tool needed → streams response
+  │
+  └─► Tool call → LLM emits: { tool: "<module>_search", query: "..." }
+        → FAISS retriever: similarity search, k=4 chunks returned
+        → Chunk text + metadata (source, page, module) sent back to LLM
+        → LLM refines and streams final answer
+```
+
+### Step 5 — Response Streams Token-by-Token
+```
+astream_events(..., version="v2")
+  → fires "on_chat_model_stream" once per token
+  → each token: await response_msg.stream_token(chunk.content)
+  → user sees response appearing character by character
+```
+
+### Step 6 — Conversation Persisted
+```
+Full turn saved to both databases:
+  chat_history.db     → LangGraph checkpointer (LLM memory per thread_id)
+  chainlit_threads.db → Chainlit UI (sidebar + message history)
+
+User can close browser, return later, click any thread → full history restored
+```
+
+---
+
+## 📁 Project Structure
+
+```
+RAG_Project/
+│
+├── chainlit_app.py           ← Chainlit UI, auth, thread/message persistence, dataLayer
+├── app.py                    ← LangGraph RAG graph, LLM, tools, FAISS retriever, tracing
+├── ingest.py                 ← Document ingestion pipeline (load → chunk → embed → index)
+│
+├── requirements.txt          ← Python dependencies
+├── DockerFile                ← Docker image definition
+├── docker-compose.yml        ← Multi-container orchestration
+├── .dockerignore
+├── config.toml               ← Chainlit UI config
+├── custom.css                ← Custom Chainlit styling
+│
+├── data/                     ← Drop your PDFs / DOCX / XLSX / JSON here
+│   └── (your documents)
+│
+├── processed/                ← Files moved here after successful ingestion
+│   ├── default/
+│   └── project_a/
+│
+├── vectorstore/              ← FAISS indices (output of ingest.py)
+│   ├── default/
+│   │   ├── index.faiss       ← Binary vector index
+│   │   ├── index.pkl         ← Index metadata
+│   │   └── docstore.pkl      ← Document text + metadata
+│   └── project_a/
+│       └── ...
+│
+├── chat_history.db           ← LangGraph checkpointer (multi-turn LLM memory)
+├── chainlit_threads.db       ← Chainlit UI threads + messages (sidebar)
+└── Project_Update.txt        ← Changelog
+```
+
+---
+
+## ⚡ Quick Start
+
+### 1. Clone & Install
 
 ```bash
+git clone https://github.com/pratiksinha312511/RAG_Project.git
+cd RAG_Project
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-Required packages (also in `requirements.txt`):
-- `chainlit` — UI framework
-- `langgraph` — Agent/RAG orchestration
-- `langchain` & `langchain-community` — LLM chains, tools, retrievers
-- `langchain-huggingface` — HuggingFace LLM endpoint
-- `fastembed` — Fast embeddings (BAAI/bge-small-en-v1.5)
-- `python-dotenv` — Environment variable loading
-- `langsmith` — LangSmith SDK for tracing (auto-installed with langchain)
+### 2. Configure `.env`
 
-### 3. Configure `.env` File
+Create a `.env` file in the project root:
 
-Create `.env` in the project root with your API keys:
-
-```dotenv
-# HuggingFace API (required for LLM)
+```env
+# HuggingFace (required for LLM)
 HUGGINGFACEHUB_API_TOKEN=hf_your_token_here
 
 # LangSmith Tracing (optional but recommended)
@@ -48,29 +236,25 @@ LANGCHAIN_PROJECT=pdf-rag-chatbot
 # Chainlit Auth (optional)
 CHAINLIT_AUTH_SECRET=your_secret_key_here
 
-# Google Gemini (optional if using Google LLMs)
+# Google Gemini (optional)
 GOOGLE_API_KEY=your_google_api_key_here
 ```
 
-### 4. Ingest PDFs
-
-Place PDF files (or `.docx`, `.xlsx`, `.json`) in `data/` folder:
+### 3. Create Folder Structure
 
 ```bash
-python ingest.py
+mkdir data processed vectorstore
 ```
 
-This will:
-- Load documents from `data/`
-- Split into 1000-token chunks (100-token overlap)
-- Embed using `BAAI/bge-small-en-v1.5`
-- Save FAISS index to `vectorstore/default/`
-- Move processed files to `processed/default/`
+### 4. Ingest Your Documents
 
-To ingest into a different module (vectorstore):
 ```bash
-MODULE=project_a python ingest.py
-MODULE=project_b python ingest.py
+# Place files in data/ folder, then:
+python ingest.py
+
+# For named modules:
+MODULE=company_docs python ingest.py
+MODULE=faq python ingest.py
 ```
 
 ### 5. Run the App
@@ -79,146 +263,127 @@ MODULE=project_b python ingest.py
 chainlit run chainlit_app.py -w
 ```
 
-Open browser → `http://localhost:8000` → Login (see credentials below)
+Open → `http://localhost:8000` → Login with credentials below.
 
 ---
 
-## Login Credentials (Default)
+## 📥 Document Ingestion
 
-| Username | Password  |
-|----------|-----------|
-| admin    | admin123  |
-| user     | user123   |
+The `ingest.py` pipeline processes any file in `data/` and converts it into a searchable FAISS vectorstore:
 
-**Change credentials** by editing `VALID_USERS` in [chainlit_app.py](chainlit_app.py#L28):
-
-```python
-VALID_USERS = {
-    "yourname": "yourpassword",
-    "alice": "alice_password",
-}
+```
+data/ folder
+    │
+    ├── document.pdf   ┐
+    ├── report.docx    ├─► Loaded by LangChain document loaders
+    ├── data.xlsx      │
+    └── config.json    ┘
+            │
+            ▼
+    ┌───────────────────────┐
+    │    Text Chunking      │  chunk_size    = 1000 tokens
+    │  RecursiveCharacter   │  chunk_overlap = 100 tokens
+    │    TextSplitter       │
+    └──────────┬────────────┘
+               │
+               ▼
+    ┌───────────────────────┐
+    │      Embedding        │  BAAI/bge-small-en-v1.5
+    │      FastEmbed        │  384-dimensional vectors
+    └──────────┬────────────┘
+               │
+               ▼
+    ┌───────────────────────┐
+    │     FAISS Index       │  Saved to vectorstore/<module>/
+    │     + Docstore        │  index.faiss · index.pkl · docstore.pkl
+    └──────────┬────────────┘
+               │
+               ▼
+    processed/<module>/     ← Files moved here after indexing
 ```
 
 ---
 
-## Architecture
+## 🗂️ Multi-Module Setup
 
-### System Flow
+Organise documents into separate knowledge bases — each gets its own vectorstore and named retriever tool:
 
-```
-User Chat Input
-    ↓
-[Chainlit UI] ← Display + Auth
-    ↓
-[chainlit_app.py] ← Thread management, message persistence
-    ↓
-[app.py] LangGraph Agent
-    ├── Query LLM w/ tools
-    ├── LLM decides: answer directly OR call retriever tool
-    └── Retriever tool searches FAISS vectorstore
-    ↓
-[LangSmith] ← Traces every step (LLM, retriever, tool calls)
-    ↓
-Stream Response Tokens Back to UI
+```bash
+MODULE=company_docs  python ingest.py   →  vectorstore/company_docs/
+MODULE=faq           python ingest.py   →  vectorstore/faq/
+MODULE=engineering   python ingest.py   →  vectorstore/engineering/
 ```
 
-### Why This Architecture?
+At runtime, `app.py` auto-discovers all vectorstore folders and creates a named LangGraph tool for each:
 
-- **LangGraph**: Handles agent loop, tools, state management reliably
-- **FAISS**: Fast, local similarity search (no external API latency)
-- **Chainlit**: Polished UI, auth, thread history out-of-box
-- **LangSmith**: Full visibility into RAG pipeline (critical for debugging retriever quality)
-- **Token-level streaming**: Real-time token delivery via `astream_events(..., version="v2")`
+```
+vectorstore/company_docs/  →  tool: company_docs_search
+vectorstore/faq/           →  tool: faq_search
+vectorstore/engineering/   →  tool: engineering_search
+```
 
-### Key Components
+The LLM automatically decides which tool to call based on the user's query — no manual routing needed:
 
-| File | Purpose |
-|------|---------|
-| [chainlit_app.py](chainlit_app.py) | Chainlit UI, auth, thread/message persistence, dataLayer |
-| [app.py](app.py) | LangGraph RAG graph, LLM, tools, FAISS retriever setup |
-| [ingest.py](ingest.py) | PDF/DOCX/XLSX loader, chunking, embedding, FAISS indexing |
-| [chat_history.db](chat_history.db) | LangGraph checkpointer (LLM memory per thread) |
-| [chainlit_threads.db](chainlit_threads.db) | Chainlit UI DB (sidebar threads + messages) |
+```
+User: "What's our refund policy?"
+  └─► LLM calls: faq_search("refund policy")
+
+User: "Show me the Q3 engineering spec for module X"
+  └─► LLM calls: engineering_search("Q3 engineering spec module X")
+```
 
 ---
 
-## LangSmith Tracing
+## 📊 LangSmith Tracing & Observability
 
-### Why LangSmith?
+LangSmith gives you **full visibility** into every step of the RAG pipeline.
 
-See **exactly** which documents were retrieved, token-by-token LLM streaming, latency breakdown, and error traces in one dashboard.
+```
+┌──────────────────────────────────────────────────────────┐
+│               LangSmith Run Timeline                     │
+│                                                          │
+│  ┌───────────────────────────────────────────────────┐   │
+│  │  LLM Step (Qwen 7B)                               │   │
+│  │  • Tokens streamed : 312                          │   │
+│  │  • Temperature     : 0.7                          │   │
+│  │  • Latency         : 1.52s                        │   │
+│  └───────────────────────────────────────────────────┘   │
+│  ┌───────────────────────────────────────────────────┐   │
+│  │  Tool / Retriever Step                            │   │
+│  │  • Input query          : "transformer attention" │   │
+│  │  • Documents retrieved  : 4                       │   │
+│  │  • Chunk sources        : paper.pdf (p.3, p.7)    │   │
+│  │  • Retriever latency    : 67ms                    │   │
+│  └───────────────────────────────────────────────────┘   │
+│  Metadata: module=default · tokens=312 · cost=$0.00      │
+└──────────────────────────────────────────────────────────┘
+```
 
 ### Setup
 
-1. **Ensure `.env` has LangSmith credentials:**
-   ```dotenv
-   LANGCHAIN_TRACING_V2=true
-   LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
-   LANGCHAIN_API_KEY=lsv2_pt_your_api_key_here
-   LANGCHAIN_PROJECT=pdf-rag-chatbot
-   ```
+Ensure `.env` has LangSmith credentials. Traces are **auto-captured** — no code changes needed. The app initialises a `LangSmithTracer` + `CallbackManager` on startup and passes it to both the LLM and all retriever tools.
 
-2. **Traces are auto-captured** — no code changes needed in `app.py` or `chainlit_app.py`:
-   - `app.py` loads `.env` early and initializes `LangSmithTracer` + `CallbackManager`
-   - Callback manager is passed to LLM and retriever tools
-   - All LLM calls, tool invocations, and document fetches are traced
+### View Traces
 
-3. **View traces in LangSmith UI:**
-   - Open https://smith.langchain.com
-   - Select your project (`pdf-rag-chatbot`)
-   - Go to **"Runs"** tab
-   - Click any run to see timeline with:
-     - **LLM step**: Tokens streamed, model, temperature, latency
-     - **Tool/Retriever step**: Input query, retrieved documents, chunk sources
-     - **Metadata**: Module name, token count, cost estimates
-
-### Latency Metrics (Current)
-
-From live traces:
-- **P50 latency**: 1.47s – 1.58s
-- **P99 latency**: 2.56s
-- **Breakdown**:
-  - LLM inference (Qwen 7B via HF): **~1.5–2.5s** ← bottleneck
-  - Retriever (FAISS): **~50–100ms**
-  - Streaming overhead: **~100–300ms**
-
-**Bottleneck**: LLM inference via HuggingFace API.
-
-### Optimization Options
-
-| Option | Latency Gain | Effort | Notes |
-|--------|--------------|--------|-------|
-| Reduce `k` (4 → 2) | ~50ms | ⭐ Easy | Less context to process |
-| MMR retriever | Neutral | ⭐ Easy | Better quality, same speed |
-| Larger chunks (1000 → 2000) | Neutral | ⭐ Easy | Fewer doc reads, info density |
-| Better embeddings (bge-base) | +100ms | ⭐ Easy | Better ranking; requires re-ingest |
-| **Local LLM (Ollama)** | **40–50%** | ⭐⭐ Medium | **Biggest impact** |
-| Quantized model (int8/int4) | 15–30% | ⭐⭐ Medium | Slightly lower quality |
-| Reranker (CrossEncoder) | Slower | ⭐⭐ Medium | Better relevance, +200–500ms |
-
-**Quick win**: Reduce `k` to 2–3 in [app.py](app.py#L68) (search_kwargs):
-```python
-retrievers[module.lower()] = db.as_retriever(search_kwargs={"k": 2})
-```
-
-**Best latency cut**: Run local LLM with Ollama or use a faster model.
+1. Open [smith.langchain.com](https://smith.langchain.com)
+2. Select project: `pdf-rag-chatbot`
+3. Go to **"Runs"** tab → click any run to inspect the full timeline
 
 ---
 
-## Token-Level Streaming
+## 📡 Token-Level Streaming
 
-Responses stream **token-by-token** as the LLM generates them (not chunk-by-chunk).
-
-Implementation in [chainlit_app.py](chainlit_app.py#L427):
+Responses stream **token-by-token** as the LLM generates them — not chunk-by-chunk.
 
 ```python
+# chainlit_app.py
 async for event in app.astream_events(
     {"messages": [HumanMessage(content=message.content)]},
     config={
         "configurable": {"thread_id": thread_id},
         "checkpointer": memory,
     },
-    version="v2",
+    version="v2",                          # ← fires once per token
 ):
     if event["event"] == "on_chat_model_stream":
         chunk = event.get("data", {}).get("chunk")
@@ -227,185 +392,68 @@ async for event in app.astream_events(
                 await response_msg.stream_token(chunk.content)
 ```
 
-Why `v2`?
-- `astream_events(..., version="v2")` fires `on_chat_model_stream` **hundreds of times per response** (once per token)
-- Each token appears in the UI instantly, creating a natural streaming effect
-- Traces in LangSmith show each token delivery for debugging
+`version="v2"` fires `on_chat_model_stream` **hundreds of times per response** — once per token — making the UI feel instant and conversational.
 
 ---
 
-## Project Structure
+## 🗄️ Database Architecture
+
+The app maintains **two separate SQLite databases** with distinct responsibilities:
 
 ```
-f:\langgraph\
-├── chainlit_app.py              ← Chainlit UI + Auth + DataLayer
-├── app.py                        ← LangGraph RAG + LLM + Tools + Tracing
-├── ingest.py                     ← Document ingestion pipeline
-├── requirements.txt              ← Python dependencies
-├── README.md                     ← This file
-├── .env                          ← API keys (not in git, create locally)
-├── .chainlit/
-│   └── config.toml              ← Chainlit UI config
-├── public/
-│   └── custom.css               ← Custom styling
-├── data/                         ← Place PDFs/DOCX/XLSX here (ingestion input)
-├── processed/                    ← Files moved here after ingestion
-│   └── default/                 ← Processed docs for "default" module
-│   └── project_a/               ← Processed docs for "project_a" module
-├── vectorstore/                  ← FAISS indices (output of ingest.py)
-│   ├── default/
-│   │   ├── index.faiss
-│   │   ├── index.pkl
-│   │   └── docstore.pkl
-│   └── project_a/
-│       ├── index.faiss
-│       ├── index.pkl
-│       └── docstore.pkl
-├── chat_history.db              ← LangGraph checkpointer (multi-turn memory)
-├── chainlit_threads.db          ← Chainlit UI threads + messages (sidebar)
-└── __pycache__/
-```
+┌──────────────────────────────────────────────────────────────────────┐
+│  chat_history.db  (LangGraph Checkpointer)                           │
+│                                                                      │
+│  Purpose  : LLM conversation memory, scoped per thread               │
+│  Created  : on_chat_start() via AsyncSqliteSaver                     │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐    │
+│  │ checkpoints                                                  │    │
+│  │ thread_id │ checkpoint_id │ timestamp │ channel │ values BLOB│    │
+│  └──────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│  • LLM sees full prior conversation via thread_id automatically      │
+│  • No manual context injection needed                                │
+│  • Isolated per thread — different thread_id = fresh memory          │
+└──────────────────────────────────────────────────────────────────────┘
 
-### Create the folder structure (one-time):
+┌──────────────────────────────────────────────────────────────────────┐
+│  chainlit_threads.db  (Chainlit UI Persistence)                      │
+│                                                                      │
+│  Purpose  : Sidebar thread list + message history display            │
+│  Updated  : in on_message() after each user/assistant turn           │
+│                                                                      │
+│  ┌──────────────────────────────────────────────────────────────┐    │
+│  │ cl_threads                                                   │    │
+│  │ id (PK) │ name (title) │ user_id │ created_at │ metadata     │    │
+│  └──────────────────────────────────────────────────────────────┘    │
+│  ┌──────────────────────────────────────────────────────────────┐    │
+│  │ cl_messages                                                  │    │
+│  │ id (PK) │ thread_id (FK) │ role │ content │ created_at       │    │
+│  └──────────────────────────────────────────────────────────────┘    │
+│  Indexes: idx_messages_thread · idx_threads_user                     │
+└──────────────────────────────────────────────────────────────────────┘
 
-```bash
-mkdir data processed vectorstore
+┌──────────────────────────────────────────────────────────────────────┐
+│  vectorstore/<module>/  (FAISS Vector Index)                         │
+│                                                                      │
+│  Purpose  : Semantic document search (read-only at runtime)          │
+│  Created  : by ingest.py — never modified during chat                │
+│                                                                      │
+│  ├── index.faiss    ← Binary vector index + search tree              │
+│  ├── index.pkl      ← Index metadata                                 │
+│  └── docstore.pkl   ← Document text + source / page / module tags    │
+│                                                                      │
+│  Embedding : BAAI/bge-small-en-v1.5  (384 dims)                      │
+│  Search    : cosine similarity · default k=4                         │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## How It Works (Step-by-Step)
+## 🔧 Tools & Retriever Integration
 
-### 1. **User Logs In**
-   - Chainlit shows login form
-   - User enters username + password
-   - `auth_callback` in [chainlit_app.py](chainlit_app.py#L307) validates
-   - Returns `User(id="username")` → user cell session initialized
-
-### 2. **Sidebar Loads**
-   - Chainlit calls `SQLiteDataLayer.list_threads(user_id)`
-   - Returns all threads for this user from `chainlit_threads` DB
-   - User sees list in sidebar (sorted by most recent activity)
-
-### 3. **User Sends Message**
-   - Message typed in chat box
-   - `on_message()` in [chainlit_app.py](chainlit_app.py#L409) triggered
-   - Message saved to `chainlit_threads.db` + `chat_history.db`
-   - Thread titled (if first message): "where and how does..." (first 60 chars)
-   - Sidebar updated live without page reload (via `emitter.emit("update_thread", ...)`)
-
-### 4. **LLM + Retriever Invoked**
-   - [app.py](app.py#L170) LangGraph agent receives message
-   - LLM (Qwen 7B) is asked: *"Answer this question or call the search tool if you need docs"*
-   - LLM decides:
-     - **No tool call**: Returns answer directly
-     - **Tool call**: Calls `<module>_search` tool with query
-   - If tool called:
-     - Retriever searches FAISS for top-k (default k=4) similar documents
-     - Document chunks + metadata returned to LLM
-     - LLM sees context and refines answer
-   - **All of this is traced** in LangSmith (LLM calls, tool invokes, docs retrieved)
-
-### 5. **Response Streamed**
-   - LLM output streamed token-by-token via `astream_events(..., version="v2")`
-   - Each token fires `on_chat_model_stream` event
-   - Token appended to UI in real-time
-   - User sees response appearing character by character
-
-### 6. **Conversation Persisted**
-   - Full conversation saved to `chat_history.db` (LangGraph checkpoints)
-   - LLM has access to full history next message (via `thread_id` + checkpointer)
-   - User can close browser, come back later, click thread → full history loaded
-   - All turns searchable/resumable
-
----
-
-## Database Schema
-
-### **chainlit_threads.db** (Chainlit UI Persistence)
-
-Stores thread list and messages shown in sidebar:
-
-```sql
-CREATE TABLE cl_threads (
-    id         TEXT PRIMARY KEY,
-    name       TEXT,               -- Thread title (first 60 chars of first user msg)
-    user_id    TEXT,               -- User who owns this thread
-    created_at TEXT,               -- ISO 8601 timestamp
-    metadata   TEXT DEFAULT '{}'   -- JSON blob for future extensions
-);
-
-CREATE TABLE cl_messages (
-    id         TEXT PRIMARY KEY,
-    thread_id  TEXT,               -- Foreign key to cl_threads
-    role       TEXT,               -- "user" or "assistant"
-    content    TEXT,               -- Full message text
-    created_at TEXT                -- ISO 8601 timestamp
-);
-
-CREATE INDEX idx_messages_thread ON cl_messages(thread_id);
-CREATE INDEX idx_threads_user    ON cl_threads(user_id);
-```
-
-**Lifecycle**:
-- Created by `chainlit_app.py` on startup
-- Updated in `on_message()` with each user/assistant turn
-- Read by sidebar when user logs in
-- Deleted when user deletes a thread
-
----
-
-### **chat_history.db** (LangGraph Checkpointer)
-
-Stores LLM conversation memory and agent state per thread:
-
-```sql
-CREATE TABLE checkpoints (
-    thread_id  TEXT,
-    checkpoint_id TEXT,
-    timestamp  TEXT,
-    channel    TEXT,
-    version    INT,
-    values     BLOB,  -- Serialized LangGraph state (pickled)
-    metadata   TEXT   -- JSON config metadata
-);
-```
-
-**Why it exists**:
-- LLM sees full prior conversation automatically
-- No manual context injection needed
-- Thread-scoped: different `thread_id` = different conversation memory
-- Created on `on_chat_start()` via `AsyncSqliteSaver`
-
----
-
-### **vectorstore/\<module\>/index.faiss** (FAISS Vector Index)
-
-Binary vector database created by `ingest.py`:
-
-```
-vectorstore/
-└── default/                 ← Module "default"
-    ├── index.faiss         ← FAISS index (binary vectors + search tree)
-    ├── index.pkl           ← Metadata about index
-    └── docstore.pkl        ← Document text + metadata (source, page, module)
-```
-
-**Content**:
-- One vector per document chunk (1000 tokens, 100-token overlap)
-- Embedding model: `BAAI/bge-small-en-v1.5` (384 dims)
-- Metadata: source file, page number, module name
-- Supports similarity search: `k=4` closest chunks returned
-
-**Never modified by runtime** — only read during retriever calls.
-
----
-
-## Tools & Retriever Integration
-
-### How Tools Work
-
-In [app.py](app.py#L80), a **tool is created per vectorstore module**:
+`app.py` auto-creates one **named LangGraph tool per vectorstore module**:
 
 ```python
 for module_name, retriever in retrievers.items():
@@ -416,172 +464,160 @@ for module_name, retriever in retrievers.items():
     )
 ```
 
-Example: if you have 2 modules:
-- `vectorstore/company_docs/` → tool named `company_docs_search`
-- `vectorstore/faq/` → tool named `faq_search`
+Each tool:
+- Takes a query string as input
+- Returns concatenated text of top-k retrieved document chunks
+- Is **fully traced in LangSmith** (documents returned + retrieval latency)
 
-LLM can call either tool independently. Each tool:
-- Takes query string as input
-- Returns concatenated text of top-k documents
-- **Traced in LangSmith** (documents logged + retrieval latency)
-
-### Callback Manager Integration
-
-`app.py` initializes `LangSmithTracer` + `CallbackManager` if `LANGCHAIN_TRACING_V2=true`:
-
-```python
-tracer = LangSmithTracer(project_name=os.getenv("LANGCHAIN_PROJECT", "default"))
-cb_manager = CallbackManager(tracers=[tracer])
-```
-
-The callback manager is passed to:
-1. **LLM** (ChatHuggingFace) → traces every LLM invocation
-2. **Retriever** (FAISS.as_retriever) → traces document fetches
-3. **Tools** via tool node → traces tool execution
-
-Result: **Full visibility** into what docs were retrieved and why LLM made decisions.
+The LLM autonomously picks the correct tool and query based on conversation context — no hardcoded routing.
 
 ---
 
-## Troubleshooting
+## ⚡ Performance & Latency
 
-### **App won't start / Module not found errors**
+Live metrics from LangSmith traces:
 
-```bash
-# Ensure all deps installed
-pip install -r requirements.txt
-pip install langsmith
+```
+┌──────────────────────────────────────────────────────┐
+│              End-to-End Latency Breakdown            │
+│                                                      │
+│  P50 :  1.47s – 1.58s                               │
+│  P99 :  2.56s                                       │
+│                                                      │
+│  Component breakdown:                               │
+│  ├── LLM inference (Qwen 7B via HF) : ~1.5–2.5s  ← bottleneck
+│  ├── FAISS retriever                : ~50–100ms   │
+│  └── Streaming overhead             : ~100–300ms  │
+└──────────────────────────────────────────────────────┘
 ```
 
-Check if imports work:
+### Optimization Options
+
+| Option | Latency Gain | Effort | Notes |
+|--------|-------------|--------|-------|
+| Reduce `k` (4 → 2) | ~50ms | ⭐ Easy | Less context for LLM to process |
+| MMR retriever | Neutral | ⭐ Easy | Better quality, same speed |
+| Larger chunks (1000 → 2000) | Neutral | ⭐ Easy | Fewer reads, higher info density |
+| Better embeddings (bge-base) | +100ms | ⭐ Easy | Better ranking, requires re-ingest |
+| **Local LLM (Ollama)** | **40–50%** | ⭐⭐ Medium | **Biggest single improvement** |
+| Quantized model (int8/int4) | 15–30% | ⭐⭐ Medium | Slight quality tradeoff |
+| Reranker (CrossEncoder) | Slower overall | ⭐⭐ Medium | Better relevance, +200–500ms |
+
+**Quick win** — reduce `k` in `app.py`:
+```python
+retrievers[module.lower()] = db.as_retriever(search_kwargs={"k": 2})
+```
+
+---
+
+## 🐳 Docker Deployment
+
 ```bash
+# Build and run
+docker-compose up --build
+
+# App available at:
+# http://localhost:8000
+```
+
+Add your `.env` file before running. The `DockerFile` and `docker-compose.yml` handle all dependencies and environment wiring automatically.
+
+---
+
+## 🔐 Login Credentials
+
+| Username | Password |
+|----------|----------|
+| `admin` | `admin123` |
+| `user` | `user123` |
+
+**To change credentials**, edit `VALID_USERS` in `chainlit_app.py`:
+
+```python
+VALID_USERS = {
+    "yourname": "yourpassword",
+    "alice":    "alice_secure_pass",
+}
+```
+
+---
+
+## 🔧 Troubleshooting
+
+**App won't start / module not found**
+```bash
+pip install -r requirements.txt
+pip install langsmith
 python -c "import chainlit; import langgraph; import langsmith; print('OK')"
 ```
 
-### **PDFs not ingesting**
-
+**PDFs not ingesting**
 ```bash
-# Check if data/ folder exists and has files
-ls data/
-
-# Run ingest with verbose output
-python ingest.py
-
-# If files don't move to processed/, check permissions
+ls data/           # Confirm files are present
+python ingest.py   # Run with verbose output
 # Expected output: "Indexed 1200 chunks" or similar
 ```
 
-### **Sidebar is empty after login**
-
-- Ensure you've logged in (no sidebar without auth)
-- Ensure you have at least one message in the thread (sidebar only shows threads with messages)
+**Sidebar is empty after login**
+- You must send at least one message — sidebar only shows threads with messages
 - Check `chainlit_threads.db` exists and is readable
-- Check browser console (F12) for JS errors
+- Open browser console (F12) for JS errors
 
-### **LangSmith traces not appearing**
-
-1. **Check env vars loaded:**
-   ```bash
-   python -c "import os; from dotenv import load_dotenv; load_dotenv(); print(os.getenv('LANGCHAIN_TRACING_V2'))"
-   ```
-   Should print: `true`
-
-2. **Check console output on startup:**
-   ```
-   [LangSmith] Tracing enabled → project: pdf-rag-chatbot
-   [LangSmith] LangSmithTracer initialized and callback manager created
-   ```
-   If not present → SDK not installed or env var not set
-
-3. **Verify API key is valid** on https://smith.langchain.com (try signing in manually)
-
-4. **Check network** — app must reach `https://api.smith.langchain.com`
-
-### **Retriever returning no results**
-
-- Ensure `vectorstore/default/index.faiss` exists (run `ingest.py`)
-- Check embedding model loaded: `FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")`
-- Check query is similar to doc content (semantic search requires good overlap)
-- Try reducing query to key terms instead of full sentences
-- Increase `k` in [app.py](app.py#L68) to see more results (e.g., `k=8`)
-
-### **LLM response is slow** 
-
-See [Optimization Options](#optimization-options) above. Quick wins:
-1. Reduce `k` (fewer docs to process)
-2. Switch to local LLM (Ollama) — biggest impact
-3. Use smaller model (e.g., `mistralai/Mistral-7B-Instruct-v0.3`)
-
----
-
-## Multi-Module Setup (Advanced)
-
-You can organize PDFs into different modules (separate vectorstores):
-
+**LangSmith traces not appearing**
 ```bash
-# Ingest company docs into "company" module
-MODULE=company python ingest.py
-
-# Ingest FAQs into "faq" module  
-MODULE=faq python ingest.py
+python -c "import os; from dotenv import load_dotenv; load_dotenv(); print(os.getenv('LANGCHAIN_TRACING_V2'))"
+# Should print: true
 ```
+- Check startup logs for: `[LangSmith] Tracing enabled → project: pdf-rag-chatbot`
+- Verify API key is valid at [smith.langchain.com](https://smith.langchain.com)
 
-Files created:
-- `vectorstore/company/index.faiss` (company docs)
-- `vectorstore/faq/index.faiss` (FAQ docs)
-- Each gets its own tool: `company_search`, `faq_search`
-- Sidebar shows both tools when LLM deliberates
+**Retriever returning no results**
+- Ensure `vectorstore/default/index.faiss` exists — run `ingest.py` first
+- Reduce query to key terms (semantic search needs topic overlap with documents)
+- Temporarily increase `k`: `search_kwargs={"k": 8}`
 
-LLM automatically decides which module to search based on query context.
-
----
-
-## Performance Tips
-
-| Action | Impact | How |
-|--------|--------|-----|
-| Reduce chunk size 1000 → 500 | More precise, slower ingest | Edit `ingest.py` line 145 |
-| Increase chunk size 1000 → 2000 | Less precise, faster retriever | Edit `ingest.py` line 145 |
-| Reduce k: 4 → 2 | Fewer docs to LLM (~100ms faster) | Edit `app.py` line 68 |
-| Use better embeddings | Higher quality retrievals, +100ms | Change `bge-small` → `bge-base` in [app.py](app.py#L51) + re-ingest |
-| Local LLM (Ollama) | 40–60% latency cut | Setup Ollama, change `HuggingFaceEndpoint` → local endpoint |
+**LLM responses are slow**
+- Switch to a local LLM via Ollama — biggest impact
+- Reduce `k` to 2 for faster responses
+- Try `mistralai/Mistral-7B-Instruct-v0.3` (often faster on HF free tier)
 
 ---
 
-## API References
+## 📦 API References
 
-### HuggingFace LLM Models (in `app.py`)
+### HuggingFace LLM Models
 
-Current: `Qwen/Qwen2.5-7B-Instruct`
+| Model | HF ID | Notes |
+|-------|-------|-------|
+| **Qwen 2.5 7B** *(default)* | `Qwen/Qwen2.5-7B-Instruct` | Current default |
+| Mistral 7B | `mistralai/Mistral-7B-Instruct-v0.3` | Good balance |
+| Llama 3 8B | `meta-llama/Meta-Llama-3-8B-Instruct` | Strong reasoning |
+| Zephyr 7B | `HuggingFaceH4/zephyr-7b-beta` | Instruction following |
 
-Alternatives:
-- `mistralai/Mistral-7B-Instruct-v0.3` — Good balance
-- `meta-llama/Meta-Llama-3-8B-Instruct` — Strong reasoning (needs access)
-- `HuggingFaceH4/zephyr-7b-beta` — Instruction-following
-- Local via Ollama — Run on your machine
+### Embedding Model
 
-### Embedding Model (in `app.py` + `ingest.py`)
-
-Current: `BAAI/bge-small-en-v1.5` (384-dim, fast)
-
-Alternatives:
-- `BAAI/bge-base-en-v1.5` (768-dim, higher quality, slower)
-- `sentence-transformers/all-MiniLM-L6-v2` (384-dim, fast but weaker)
-
-### Vector Store (FAISS)
-
-Fast local similarity search. No external API calls.
-- Supports: cosine, L2, inner product
-- Pre-loaded on app startup
-- Module-scoped per folder
+| Model | Dims | Speed | Quality |
+|-------|------|-------|---------|
+| **BAAI/bge-small-en-v1.5** *(default)* | 384 | ⚡ Fast | Good |
+| BAAI/bge-base-en-v1.5 | 768 | Moderate | Better |
+| all-MiniLM-L6-v2 | 384 | ⚡ Fast | Weaker |
 
 ---
 
-## License & Contributing
+## 📜 License & Contributing
 
-This is a template for demonstration and learning. Feel free to fork, modify, and extend for your use case.
+Production-ready template designed for learning and extension. Fork freely, adapt to your use case.
 
-For bugs or questions, check:
+Reference docs:
 - [LangGraph Docs](https://langchain-ai.github.io/langgraph/)
 - [Chainlit Docs](https://docs.chainlit.io/)
 - [LangSmith Docs](https://docs.smith.langchain.com/)
+- [FAISS Docs](https://faiss.ai/)
+
+---
+
+<div align="center">
+
+Built with ❤️ using **LangGraph** · **Chainlit** · **FAISS** · **LangSmith** · **HuggingFace**
+
+</div>
